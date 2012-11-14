@@ -9,6 +9,9 @@
 
 #define PIN_RESERVED 128
 
+#define high true
+#define low false
+
 //this is based on TOP view of RPi board
 // +---+---+
 // | 1 | 2 |
@@ -50,15 +53,16 @@ enum eventType
 {
     risingEdge,
     fallingEdge,
-    highLevel,
-    lowLevel
+    bothEdges,
+    noneEdges
 };
 
 enum pinState
 {
-    pinStateUninit,
-    pinStateInput,
-    pinStateOutput
+    pinUninit,
+    pinInput,
+    pinOutput,
+    pinError
 };
 
 
@@ -66,7 +70,7 @@ class Pin
 {
   private:
     pinState state;
-    bool output;
+    bool outputValue;
     unsigned int mapping;
   public:
     int number;
@@ -75,8 +79,8 @@ class Pin
     //~Pin();
     void setState(pinState st) {state = st;};
     pinState getState(void) {return state;}
-    void setOutput(bool val) {output = val;};
-    bool getOutput(void) {return output;};
+    void setOutput(bool val) {outputValue = val;};
+    bool getOutput(void) {return outputValue;};
     void setMapping(unsigned int val) {mapping = val;};
     unsigned int getMapping(void) {return mapping;};
 
@@ -85,16 +89,16 @@ class Pin
 
 Pin::Pin()
 {
-    state = pinStateUninit;
-    output = false;
+    state = pinUninit;
+    outputValue = low;
 };
 
 void Pin::printState()
 {
     using namespace std;
     cout << "| "<< 
-      (this->getState() == pinStateUninit ? "-u-" : (this->getState() == pinStateInput ? "<--" : "-->")) << " | " << 
-      (this->getOutput() == true ? '+' : '-') << " | " ;
+      (this->getState() == pinUninit ? "-u-" : (this->getState() == pinInput ? "<--" : "-->")) << " | " << 
+      (this->getOutput() == high ? '+' : '-') << " | " ;
     cout.width(3);
     cout << this->getMapping();
 }
@@ -111,6 +115,7 @@ class piBase
     void fillPins();
     
     bool setupGpios();
+    bool getRealPinValue(boardPin pin);
     
   
   public:
@@ -122,7 +127,7 @@ class piBase
     static unsigned boardV2pin[];
     static unsigned boardV1pin[];
 
-    piBase(int ver);
+    piBase(int, bool);
     ~piBase();
 
     void setPinInput(boardPin pin);
@@ -134,7 +139,10 @@ class piBase
     void toggleOutput(boardPin pin);
 
     bool readInput(boardPin pin);
+
     int registerIrq(boardPin pin);
+    bool setPinOperationMode(boardPin pin, pinState state);
+    pinState getPinStatus(boardPin pin);
 
     bool clearEventDetection(boardPin pin, eventType type);
     bool setEventDetection(boardPin pin, eventType type);
@@ -242,15 +250,27 @@ void piBase::fillPins()
         {
             pins[i].setMapping(boardV2pin[i]);
         }
-        pins[i].setState(pinStateUninit);
-        pins[i].setOutput(false);
+        pins[i].setState(pinUninit);
+        pins[i].setOutput(low);
         pins[i].number = i;
     }
 };
 
-piBase::piBase(int ver)
+piBase::piBase(int ver, bool useIrq)
 {
-    version = ver;        
+    version = ver;
+
+    if (useIrq)
+    {
+        for (int i = 0; i < (sizeof pins / sizeof pins[0]); i++)
+        {
+            pins[i].setState(getPinStatus(static_cast<boardPin>(i)));
+            if (pins[i].getState() != pinError && pins[i].getState() != pinUninit)
+            {
+                pins[i].setOutput(getRealPinValue(static_cast<boardPin>(i)));
+            }
+        }
+    }
 
 //    if (bcm2835_init())
     {
@@ -271,7 +291,7 @@ void piBase::setPinInput(boardPin pin)
     if (initialized && pins[pin].getMapping() != PIN_RESERVED)
     {
 //        bcm2835_gpio_fsel(pins[pin].getMapping(), BCM2835_GPIO_FSEL_INPT);
-        pins[pin].setState(pinStateInput);
+        pins[pin].setState(pinInput);
     }
     else
         std::cout << "input error: " << pin + 1 << std::endl;
@@ -280,7 +300,7 @@ void piBase::setPinInput(boardPin pin)
 void piBase::setPinInputPullUp(boardPin pin)
 {
     if (initialized && pins[pin].getMapping() != PIN_RESERVED 
-		&& pins[pin].getState() == pinStateOutput)
+		&& pins[pin].getState() == pinOutput)
     {
 //        bcm2835_gpio_set_pud(pins[pin].getMapping(), BCM2835_GPIO_FSEL_INPT);
     }
@@ -293,16 +313,16 @@ void piBase::setPinOutput(boardPin pin)
     if (initialized && pins[pin].getMapping() != PIN_RESERVED)
     {
 //        bcm2835_gpio_fsel(pins[pin].getMapping(), BCM2835_GPIO_FSEL_OUTP);
-        pins[pin].setState(pinStateOutput);
+        pins[pin].setState(pinOutput);
     }
 };
 
 void piBase::turnOff(boardPin pin)
 {
-    if (pins[pin].getState() == pinStateOutput)
+    if (pins[pin].getState() == pinOutput)
     {
 //        bcm2835_gpio_write(pins[pin].getMapping(), LOW);
-        pins[pin].setOutput(false);
+        pins[pin].setOutput(low);
     }
     else
         std::cout << "turn off error: " << pin + 1 << std::endl;
@@ -310,10 +330,10 @@ void piBase::turnOff(boardPin pin)
 
 void piBase::turnOn(boardPin pin)
 {
-    if (pins[pin].getState() == pinStateOutput)
+    if (pins[pin].getState() == pinOutput)
     {
 //        bcm2835_gpio_write(pins[pin].getMapping(), HIGH);
-        pins[pin].setOutput(true);
+        pins[pin].setOutput(high);
     }
     else
         std::cout << "turn on error: " << pin + 1 << std::endl;
@@ -321,9 +341,9 @@ void piBase::turnOn(boardPin pin)
 
 void piBase::toggleOutput(boardPin pin)
 {
-    if (pins[pin].getState() == pinStateOutput)
+    if (pins[pin].getState() == pinOutput)
     {
-        if (pins[pin].getOutput() == true)
+        if (pins[pin].getOutput() == high)
             ;//bcm2835_gpio_write(pins[pin].getMapping(), LOW);
         else
             ;//bcm2835_gpio_write(pins[pin].getMapping(), HIGH);
@@ -345,9 +365,9 @@ bool piBase::setEventDetection(boardPin pin, eventType type)
     {
         case risingEdge:
             break;
-        case lowLevel:
+       // case lowLevel:
             //bcm2835_gpio_len(pins[pin].getMapping());
-            break;
+         //   break;
     }
     return true;
 };
@@ -398,14 +418,9 @@ bool piBase::readInput(boardPin pin)
 };
 
 #include <sstream>
+#include <fstream>
 
-//# Set up GPIO 4 and set to output
-//echo "4" > /sys/class/gpio/export
-//echo "out" > /sys/class/gpio/gpio4/direction
-
-//# Clean up
-//echo "4" > /sys/class/gpio/unexport
-//echo "7" > /sys/class/gpio/unexport
+// ---------------------------   methods to be used with IRQ based GPIO readings --------------------------------------- 
 int piBase::registerIrq(boardPin pin)
 {
     using namespace std;
@@ -428,6 +443,138 @@ int piBase::registerIrq(boardPin pin)
     return fd;
 }
 
+pinState piBase::getPinStatus(boardPin pin)
+{
+    using namespace std;
+
+    stringstream out;
+    out << pins[pin].getMapping();
+
+    string gpioName = "/sys/class/gpio/gpio" + out.str();
+
+    if (access(gpioName.c_str(), F_OK))
+    {
+        gpioName += "/direction";
+        ifstream gpioFile;
+        gpioFile.open(gpioName.c_str(), ios::out);
+        if (gpioFile.is_open() == false)
+        {
+            cout << "error occured while opening file: " +  gpioName;
+        }
+        string pinStatus;
+        gpioFile >> pinStatus;
+        gpioFile.close();
+
+        if (pinStatus.compare("in") == 0)
+            return pinInput;
+        else if (pinStatus.compare("out") == 0)
+            return pinOutput;
+        else
+        {
+            cout << "unknown pin state: " << pinStatus;
+            return pinError;
+        }
+    }
+    return pinUninit;
+}
+
+bool piBase::setPinOperationMode(boardPin pin, pinState state)
+{
+    using namespace std;
+
+    string fileName = "/sys/class/gpio/";
+
+    //check if already exported
+    pinState actualState = this->getPinStatus(pin);
+
+    if ((state == pinInput || state == pinOutput) && actualState != pinUninit)
+    {
+        cout << "unable to change state of pin: " << pin + 1 << " from " << actualState << " to " << state << endl;
+        return false;
+    }
+
+    if (state == pinUninit)
+    {
+        if (actualState != pinInput && actualState != pinOutput)
+        {
+            cout << "unable to uninitialize pin: " << pin + 1 << " from " << actualState <<  endl;
+            return false;
+        }
+        fileName += "unexport";
+        ofstream unexportFile;
+        unexportFile.open(fileName.c_str(), ios::in);
+        if (unexportFile.is_open() == false)
+        {
+            cout << "error opening file for unexporting gpio" << endl;
+            return false;
+        }
+        unexportFile << pins[pin].getMapping();
+        unexportFile.close();
+        return true;
+    }
+   
+    fileName += "export";
+    
+    ofstream exportFile;
+    exportFile.open(fileName.c_str(), ios::in);
+
+    if (exportFile.is_open() == false)
+    {
+        cout << "error opening file for unexporting gpio" << endl;
+        return false;
+    }
+    exportFile << pins[pin].getMapping();
+    exportFile.close();
+
+    stringstream out;
+    out << pins[pin].getMapping();
+
+    string directionFileName = "/sys/class/gpio/gpio" + out.str() + "/direction";
+
+    ofstream directionFile;
+    directionFile.open(directionFileName.c_str(), ios::in);
+
+    if (directionFile.is_open() == false)
+    {
+        cout << "error opening file for setting gpio direction" << endl;
+        return false;
+    }
+    directionFile << ((state == pinInput) ? "in" : "out");
+    directionFile.close();
+    return true;
+}
+
+bool piBase::getRealPinValue(boardPin pin)
+{
+    using namespace std;
+
+    pinState state = getPinStatus(pin);
+    if (state == pinInput || state == pinOutput)
+    {
+        stringstream out;
+        out << pins[pin].getMapping();
+
+        string fileName = "/sys/class/gpio/gpio" + out.str() + "/value";
+        ifstream valueFile;
+        valueFile.open(fileName.c_str(), ios::out);
+        if (valueFile.is_open() == false)
+        {
+            cout << "error reading value from file " + fileName << endl;
+        }
+        string value;
+        valueFile >> value;
+
+        valueFile.close();
+
+        if (value.compare("1") == 0)
+            return high;
+        else if (value.compare("0") == 0)
+            return low;
+
+    }
+    return false;
+}
+
 
 void *print_input(int fd, epollEvents event, void* data)
 {
@@ -447,7 +594,7 @@ void *print_input(int fd, epollEvents event, void* data)
 
 int main(int argc, char *argv[])
 {
-    piBase raspberry(1);
+    piBase raspberry(1, true);
 
     raspberry.printPinsStatus();
 
