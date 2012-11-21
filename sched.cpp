@@ -135,7 +135,9 @@ void epollScheduler::run()
     {
         ret = this->runOnce(this->calculateNextBreak());
         
-    } while (errno == EINTR && ret < 0);
+    } while (ret > 0 /*&& errno == EINTR*/);
+
+    std::cout << "epoll returned: " << ret << " with error: " << errno << std::endl;
 };
 
 int epollScheduler::runOnce(unsigned int time)
@@ -147,12 +149,18 @@ int epollScheduler::runOnce(unsigned int time)
 
     if (ret < 0)
     {
+        std::cout << "epoll returned: " << ret << " with error: " << errno << std::endl;
         return -1;
     }
 
-    if (ret > 0)
+    else if (ret > 0)
     {
         epollHandleEvents(events, ret);
+    }
+    
+    else
+    {
+        std::cout << "0 returned -> timeout" << std::cout;
     }
 };
 
